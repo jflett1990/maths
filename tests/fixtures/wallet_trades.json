@@ -1,0 +1,1 @@
+[{"market_id":"m1","ts":1000,"side":"buy","price":0.45,"size":200,"category":"politics","liquidity":20000,"resolution_clarity":0.9,"resolved":true,"outcome":1},{"market_id":"m2","ts":2000,"side":"buy","price":0.7,"size":50,"category":"sports","liquidity":2000,"resolution_clarity":0.4,"resolved":false,"outcome":null}]
