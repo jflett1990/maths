@@ -40,14 +40,28 @@ def _fingerprint_config(path: str) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
 
 
-def run_once(config_path: str) -> int:
+def run_once(
+    config_path: str,
+    market_adapter: PolymarketRESTAdapter | None = None,
+    wallet_adapter: WalletAdapter | None = None,
+    broker: PaperBroker | None = None,
+    recorder: JsonlRecorder | None = None,
+    clock: callable | None = None,
+) -> int:
     cfg = load_config(config_path)
     run_id = str(uuid.uuid4())
     circuit = CircuitState()
-    adapter = PolymarketRESTAdapter(rate_limit_per_sec=cfg.adapters.rate_limit_per_sec, timeout_sec=cfg.adapters.timeout_sec)
-    wallet_adapter = WalletAdapter(rate_limit_per_sec=cfg.adapters.rate_limit_per_sec, timeout_sec=cfg.adapters.timeout_sec, fixture_payloads={"/wallet-trades?wallet=smart1&limit=500": []})
-    broker = PaperBroker()
-    recorder = JsonlRecorder(cfg.recorder.output_dir, run_id=run_id, fsync=cfg.recorder.fsync, fail_on_error=cfg.recorder.fail_on_error)
+    now = clock or (lambda: int(time.time()))
+    if market_adapter is None:
+        fixture_payloads = {}
+        fixture = Path("tests/fixtures/markets.json")
+        if fixture.exists():
+            fixture_payloads["/markets"] = json.loads(fixture.read_text())
+        market_adapter = PolymarketRESTAdapter(rate_limit_per_sec=cfg.adapters.rate_limit_per_sec, timeout_sec=cfg.adapters.timeout_sec, fixture_payloads=fixture_payloads)
+    if wallet_adapter is None:
+        wallet_adapter = WalletAdapter(rate_limit_per_sec=cfg.adapters.rate_limit_per_sec, timeout_sec=cfg.adapters.timeout_sec, fixture_payloads={"/wallet-trades?wallet=smart1&limit=500": []})
+    broker = broker or PaperBroker()
+    recorder = recorder or JsonlRecorder(cfg.recorder.output_dir, run_id=run_id, fsync=cfg.recorder.fsync, fail_on_error=cfg.recorder.fail_on_error)
     sentiment = SentimentAnalyzer()
     oracle = NullOracle()
     state_store = InMemoryStateStore()
@@ -58,7 +72,7 @@ def run_once(config_path: str) -> int:
         rec = ExperimentRegistry(sigcfg.registry_path, Path(sigcfg.registry_path).with_name("registry_state.json").as_posix()).get(sigcfg.experiment_id)
         dataset_fp = fingerprint_files(sigcfg.dataset_paths)
         report_fp = fingerprint_files([sigcfg.validation_report_path]) if Path(sigcfg.validation_report_path).exists() else "missing"
-        perm = resolve_signal_permission(cfg.mode, rec, dataset_fp, report_fp)
+        perm = resolve_signal_permission(cfg.mode, rec, dataset_fp, report_fp, requested_mode=sigcfg.requested_mode)
         if perm.fatal_errors and cfg.mode == "live":
             raise RuntimeError("live fail-closed signal governance")
         perm_reasons = perm.downgrade_reasons
@@ -66,7 +80,7 @@ def run_once(config_path: str) -> int:
         perm = resolve_signal_permission(cfg.mode, None, "", "")
         perm_reasons = ["signal_disabled_or_missing_mapping"]
 
-    raw_markets = adapter.fetch_active_markets()
+    raw_markets = market_adapter.fetch_active_markets()
     wallet_trades = wallet_adapter.fetch_wallet_trades("smart1")
     scores = {p.wallet_id: score_wallet(p) for p in [attribute_wallet_performance(wallet_trades)] if p.wallet_id}
     clusters = heuristic_clusters(wallet_trades)
@@ -82,7 +96,11 @@ def run_once(config_path: str) -> int:
 
     if cfg.kill_switch.global_enabled:
         circuit.trip("cb_global_kill_switch")
+
     for m in markets:
+        if m.market_id in cfg.kill_switch.per_market_disabled:
+            rejected["market_kill_switch"] += 1
+            continue
         w_signal = wallet_signal_for_market(m.market_id, wallet_trades, scores)
         if not perm.allow_positive_alpha:
             w_signal.wallet_alpha_bps = 0.0
@@ -97,20 +115,27 @@ def run_once(config_path: str) -> int:
         state_store.put(f"market:{m.market_id}", {"market_id": m.market_id, "sentiment": sentiment_score, "oracle_probability": oracle_probability})
         signal = evaluate_market(m, cfg, cross=violations.get(m.market_id), wallet_signal=w_signal, sentiment_score=sentiment_score, oracle_probability=oracle_probability)
         ok, reason = allow_trade(m, signal, cfg)
-        recorder.write("market_snapshots", {"ts": int(time.time()), "market_id": m.market_id, "bid": m.yes_price, "ask": m.no_price, "mid": (m.yes_price + m.no_price) / 2})
-        recorder.write("wallet_observations", {"ts": int(time.time()), "wallet_id": "smart1", "market_id": m.market_id, "price": m.yes_price, "size": cfg.execution.quote_size, "category": m.category, "liquidity": m.liquidity, "resolution_clarity": 1.0})
+        recorder.write("market_snapshots", {"ts": now(), "market_id": m.market_id, "bid": m.yes_price, "ask": m.no_price, "mid": (m.yes_price + m.no_price) / 2})
+        recorder.write("wallet_observations", {"ts": now(), "wallet_id": "smart1", "market_id": m.market_id, "price": m.yes_price, "size": cfg.execution.quote_size, "category": m.category, "liquidity": m.liquidity, "resolution_clarity": 1.0})
         recorder.write("wallet_signals", {"market_id": m.market_id, "wallet_signal": asdict(w_signal)})
         recorder.write("decision_context", {"market_id": m.market_id, "gate": reason, "would_place": ok and cfg.mode == "paper"})
         if not ok:
             rejected[reason] += 1
             continue
+        if "cb_global_kill_switch" in circuit.reasons:
+            rejected["global_kill_switch"] += 1
+            continue
         if cfg.mode in {"shadow", "live"}:
             rejected[f"{cfg.mode}_observe_only"] += 1
             continue
         d = Decision(m.market_id, "quote_passive", "yes", cfg.execution.quote_size, m.yes_price, "maker", signal)
-        if not validate_order(d, m, signal, cfg).ok:
+        recorder.write("decisions", asdict(d))
+        v = validate_order(d, m, signal, cfg)
+        if not v.ok:
+            rejected[v.reason or "order_validation_failed"] += 1
             continue
         oid = broker.place(d)
+        recorder.write("orders", {"order_id": oid, "market_id": d.market_id, "side": d.side, "price": d.price, "size": d.size})
         decisions_ids.append(oid)
         fill = broker.mark_fill(oid)
         if fill:
@@ -119,6 +144,7 @@ def run_once(config_path: str) -> int:
             recorder.write("fills", asdict(fill))
             pnl = pnl_for_fill(fill, m.yes_price, signal, cfg.costs.fee_bps, cfg.costs.reward_bps_placeholder)
             pnl_rows.append(pnl)
+            recorder.write("pnl", asdict(pnl))
             placed += 1
 
     active_ids = list(broker._orders.keys())  # noqa: SLF001
@@ -144,6 +170,7 @@ def run_once(config_path: str) -> int:
         "pnl_total": sum(p.total for p in pnl_rows),
     }
     recorder.write("run_metadata", {"config_fingerprint": _fingerprint_config(config_path)})
+    recorder.write("run", {"placed": placed, "markets": len(markets)})
     recorder.write("run_report", summary)
     Path(cfg.recorder.output_dir, "run_report.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
     return placed

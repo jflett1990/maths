@@ -16,9 +16,9 @@ class SignalPermission:
     fatal_errors: list[str] = field(default_factory=list)
 
 
-def resolve_signal_permission(runtime_mode: str, registry_record: dict | None, dataset_fingerprint: str, report_fingerprint: str) -> SignalPermission:
+def resolve_signal_permission(runtime_mode: str, registry_record: dict | None, dataset_fingerprint: str, report_fingerprint: str, requested_mode: str | None = None) -> SignalPermission:
     try:
-        res = guard_signal_runtime(runtime_mode, "observe_only", registry_record, dataset_fingerprint, report_fingerprint)
+        res = guard_signal_runtime(runtime_mode, requested_mode or "edge_contribution_allowed", registry_record, dataset_fingerprint, report_fingerprint)
     except Exception as exc:
         return SignalPermission("disabled", False, False, False, 0.0, [], [str(exc)])
     mode = res["effective_mode"]

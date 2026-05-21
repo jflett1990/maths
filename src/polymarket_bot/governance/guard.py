@@ -2,6 +2,20 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+MODES = ["disabled", "observe_only", "risk_filter_only", "ranking_boost_allowed", "edge_contribution_allowed"]
+
+
+def _clamp_mode(granted: str, requested: str) -> str:
+    try:
+        gi = MODES.index(granted)
+    except ValueError:
+        gi = 0
+    try:
+        ri = MODES.index(requested)
+    except ValueError:
+        ri = 1
+    return MODES[min(gi, ri)]
+
 
 def guard_signal_runtime(mode: str, config_requested_mode: str, registry_record: dict | None, dataset_fingerprint: str, report_fingerprint: str) -> dict:
     warnings: list[str] = []
@@ -22,7 +36,7 @@ def guard_signal_runtime(mode: str, config_requested_mode: str, registry_record:
             raise ValueError("live mode: fingerprint mismatch")
         warnings.append("fingerprint_mismatch")
         return {"effective_mode": "observe_only", "allow_wallet_alpha": False, "warnings": warnings}
-    granted = gate["granted_mode"]
+    granted = _clamp_mode(gate["granted_mode"], config_requested_mode)
     if granted == "risk_filter_only":
         return {"effective_mode": "risk_filter_only", "allow_wallet_alpha": False, "warnings": warnings}
     if granted == "ranking_boost_allowed":
