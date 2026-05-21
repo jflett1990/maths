@@ -33,9 +33,15 @@ penalties:
   resolution_scale: 1.0
 
 adapters:
+  clob_base_url: https://clob.polymarket.com
   rate_limit_per_sec: 5
   timeout_sec: 5
   retries: 3
+  poly_address_env: POLY_ADDRESS
+  poly_api_key_env: POLY_API_KEY
+  poly_passphrase_env: POLY_PASSPHRASE
+  poly_signature_env: POLY_SIGNATURE
+  poly_timestamp_env: POLY_TIMESTAMP
 
 costs:
   fee_bps: 0.0
@@ -83,4 +89,3 @@ edge_weights:
   orderbook: 1.0
   sentiment: 0.0
   oracle_divergence: 0.0
-

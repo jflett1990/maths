@@ -44,11 +44,12 @@ class RateLimiter:
 
 
 class PolymarketRESTAdapter:
-    def __init__(self, base_url: str = "https://clob.polymarket.com", timeout_sec: float = 5.0, rate_limit_per_sec: float = 5.0, fixture_payloads: dict[str, Any] | None = None) -> None:
+    def __init__(self, base_url: str = "https://clob.polymarket.com", timeout_sec: float = 5.0, rate_limit_per_sec: float = 5.0, fixture_payloads: dict[str, Any] | None = None, poly_headers: dict[str, str] | None = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.client = httpx.Client(timeout=timeout_sec)
         self.rate_limiter = RateLimiter(1.0 / rate_limit_per_sec)
         self.fixture_payloads = fixture_payloads or {}
+        self.poly_headers = poly_headers or {}
 
     @retry(
         wait=wait_exponential(multiplier=0.2, min=0.2, max=2),
@@ -61,7 +62,7 @@ class PolymarketRESTAdapter:
             return self.fixture_payloads[path]
         self.rate_limiter.wait()
         try:
-            response = self.client.get(f"{self.base_url}{path}")
+            response = self.client.get(f"{self.base_url}{path}", headers=self.poly_headers or None)
         except httpx.TimeoutException as exc:
             raise TimeoutError("timeout") from exc
         if response.status_code == 429:

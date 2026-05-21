@@ -21,9 +21,6 @@ def validate_order(decision: Decision, market: Market, signal: SignalResult, cfg
         reasons.append("invalid_size")
     if round(decision.price / cfg.execution.tick_size) * cfg.execution.tick_size != decision.price:
         reasons.append("tick_size_violation")
-    notional = decision.price * decision.size
-    if notional > cfg.execution.max_order_notional_per_run:
-        reasons.append("notional_limit")
     if abs(position + decision.size) > cfg.risk.max_position_per_market:
         reasons.append("inventory_limit")
     catalyst_cutoff = market.event_ts - cfg.execution.gtd_minutes_before_catalyst * 60

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import time
 import uuid
 from collections import Counter
@@ -19,7 +20,7 @@ from polymarket_bot.governance.fingerprints import fingerprint_files
 from polymarket_bot.governance.permissions import resolve_signal_permission
 from polymarket_bot.governance.registry import ExperimentRegistry
 from polymarket_bot.reconciliation import reconcile_state
-from polymarket_bot.recorder.jsonl import JsonlRecorder
+from polymarket_bot.recorder.jsonl import JsonlRecorder, RecorderError
 from polymarket_bot.risk.engine import allow_trade
 from polymarket_bot.risk.pnl import pnl_for_fill
 from polymarket_bot.risk.validation import validate_order
@@ -57,12 +58,46 @@ def run_once(
         fixture = Path("tests/fixtures/markets.json")
         if fixture.exists():
             fixture_payloads["/markets"] = json.loads(fixture.read_text())
-        market_adapter = PolymarketRESTAdapter(rate_limit_per_sec=cfg.adapters.rate_limit_per_sec, timeout_sec=cfg.adapters.timeout_sec, fixture_payloads=fixture_payloads)
+        poly_headers = {}
+        env_map = {
+            "POLY_ADDRESS": cfg.adapters.poly_address_env,
+            "POLY_API_KEY": cfg.adapters.poly_api_key_env,
+            "POLY_PASSPHRASE": cfg.adapters.poly_passphrase_env,
+            "POLY_SIGNATURE": cfg.adapters.poly_signature_env,
+            "POLY_TIMESTAMP": cfg.adapters.poly_timestamp_env,
+        }
+        for header, env_name in env_map.items():
+            v = os.getenv(env_name)
+            if v:
+                poly_headers[header] = v
+        market_adapter = PolymarketRESTAdapter(
+            base_url=cfg.adapters.clob_base_url,
+            rate_limit_per_sec=cfg.adapters.rate_limit_per_sec,
+            timeout_sec=cfg.adapters.timeout_sec,
+            fixture_payloads=fixture_payloads,
+            poly_headers=poly_headers,
+        )
+    wallet_ids = cfg.signals.wallet_universe or ["smart1"]
     if wallet_adapter is None:
-        wallet_adapter = WalletAdapter(rate_limit_per_sec=cfg.adapters.rate_limit_per_sec, timeout_sec=cfg.adapters.timeout_sec, fixture_payloads={"/wallet-trades?wallet=smart1&limit=500": []})
+        fixture_payloads = {f"/wallet-trades?wallet={wid}&limit=500": [] for wid in wallet_ids}
+        wallet_adapter = WalletAdapter(rate_limit_per_sec=cfg.adapters.rate_limit_per_sec, timeout_sec=cfg.adapters.timeout_sec, fixture_payloads=fixture_payloads)
     broker = broker or PaperBroker()
     recorder = recorder or JsonlRecorder(cfg.recorder.output_dir, run_id=run_id, fsync=cfg.recorder.fsync, fail_on_error=cfg.recorder.fail_on_error)
     sentiment = SentimentAnalyzer()
+    canonical_streams = [
+        "market_snapshots",
+        "wallet_observations",
+        "signals",
+        "decisions",
+        "orders",
+        "fills",
+        "pnl",
+        "run",
+        "run_report",
+        "reconciliation_anomalies",
+    ]
+    for stream in canonical_streams:
+        Path(cfg.recorder.output_dir, f"{stream}.jsonl").touch(exist_ok=True)
     oracle = NullOracle()
     state_store = InMemoryStateStore()
 
@@ -80,14 +115,47 @@ def run_once(
         perm = resolve_signal_permission(cfg.mode, None, "", "")
         perm_reasons = ["signal_disabled_or_missing_mapping"]
 
-    raw_markets = market_adapter.fetch_active_markets()
-    wallet_trades = wallet_adapter.fetch_wallet_trades("smart1")
+    def safe_record(stream: str, payload: dict) -> bool:
+        try:
+            recorder.write(stream, payload)
+            return True
+        except Exception:
+            circuit.trip("cb_recorder_failure_stop")
+            return False
+
+    try:
+        raw_markets = market_adapter.fetch_active_markets()
+        wallet_trades = []
+        for wid in wallet_ids:
+            wallet_trades.extend(wallet_adapter.fetch_wallet_trades(wid))
+    except AdapterError:
+        circuit.trip("cb_adapter_error_stop")
+        summary = {
+            "top_smart_wallets_observed": [],
+            "run_id": run_id,
+            "mode": cfg.mode,
+            "wallet_signal_permission": perm.effective_signal_mode,
+            "wallet_signal_downgrade_reasons": perm_reasons,
+            "reconciliation_anomalies": [],
+            "circuit_breakers_triggered": circuit.reasons,
+            "markets_rejected_by_reason": {"adapter_error": 1},
+            "wallet_derived_opportunities": 0,
+            "pnl_total": 0.0,
+        }
+        if cfg.mode == "live":
+            raise RuntimeError("live fail-closed adapter error")
+        safe_record("run_report", summary)
+        Path(cfg.recorder.output_dir, "run_report.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
     scores = {p.wallet_id: score_wallet(p) for p in [attribute_wallet_performance(wallet_trades)] if p.wallet_id}
     clusters = heuristic_clusters(wallet_trades)
     markets = rank_universe(raw_markets, cfg.max_markets_per_cycle)
     violations = evaluate_constraints(markets, build_constraints(markets))
 
     placed = 0
+    run_notional = 0.0
+    position_by_market: dict[str, float] = {}
+    exposure_by_category: dict[str, float] = {}
     rejected: Counter[str] = Counter()
     decisions_ids: list[str] = []
     recorded_fill_ids: list[str] = []
@@ -102,7 +170,8 @@ def run_once(
             rejected["market_kill_switch"] += 1
             continue
         w_signal = wallet_signal_for_market(m.market_id, wallet_trades, scores)
-        if not perm.allow_positive_alpha:
+        edge_contribution_enabled = bool(sigcfg and sigcfg.allow_edge_contribution)
+        if not perm.allow_positive_alpha or not edge_contribution_enabled:
             w_signal.wallet_alpha_bps = 0.0
         else:
             w_signal.wallet_alpha_bps = min(w_signal.wallet_alpha_bps, perm.max_alpha_bps)
@@ -115,10 +184,11 @@ def run_once(
         state_store.put(f"market:{m.market_id}", {"market_id": m.market_id, "sentiment": sentiment_score, "oracle_probability": oracle_probability})
         signal = evaluate_market(m, cfg, cross=violations.get(m.market_id), wallet_signal=w_signal, sentiment_score=sentiment_score, oracle_probability=oracle_probability)
         ok, reason = allow_trade(m, signal, cfg)
-        recorder.write("market_snapshots", {"ts": now(), "market_id": m.market_id, "bid": m.yes_price, "ask": m.no_price, "mid": (m.yes_price + m.no_price) / 2})
-        recorder.write("wallet_observations", {"ts": now(), "wallet_id": "smart1", "market_id": m.market_id, "price": m.yes_price, "size": cfg.execution.quote_size, "category": m.category, "liquidity": m.liquidity, "resolution_clarity": 1.0})
-        recorder.write("wallet_signals", {"market_id": m.market_id, "wallet_signal": asdict(w_signal)})
-        recorder.write("decision_context", {"market_id": m.market_id, "gate": reason, "would_place": ok and cfg.mode == "paper"})
+        if not safe_record("market_snapshots", {"ts": now(), "market_id": m.market_id, "bid": m.yes_price, "ask": m.no_price, "mid": (m.yes_price + m.no_price) / 2}) and cfg.recorder.fail_on_error:
+            break
+        if not safe_record("wallet_observations", {"ts": now(), "wallet_id": wallet_ids[0], "market_id": m.market_id, "price": m.yes_price, "size": cfg.execution.quote_size, "category": m.category, "liquidity": m.liquidity, "resolution_clarity": 1.0}) and cfg.recorder.fail_on_error:
+            break
+        safe_record("signals", {"market_id": m.market_id, "wallet_signal": asdict(w_signal)})
         if not ok:
             rejected[reason] += 1
             continue
@@ -129,33 +199,52 @@ def run_once(
             rejected[f"{cfg.mode}_observe_only"] += 1
             continue
         d = Decision(m.market_id, "quote_passive", "yes", cfg.execution.quote_size, m.yes_price, "maker", signal)
-        recorder.write("decisions", asdict(d))
+        safe_record("decisions", asdict(d))
+        if placed >= cfg.execution.max_orders_per_run:
+            circuit.trip("cb_max_orders_per_run")
+            rejected["max_orders_per_run"] += 1
+            continue
+        order_notional = d.price * d.size
+        if run_notional + order_notional > cfg.execution.max_order_notional_per_run:
+            circuit.trip("cb_max_order_notional_per_run")
+            rejected["max_order_notional_per_run"] += 1
+            continue
+        next_position = position_by_market.get(m.market_id, 0.0) + d.size
+        if abs(next_position) > cfg.risk.max_position_per_market:
+            circuit.trip("cb_max_position_per_market")
+            rejected["max_position_per_market"] += 1
+            continue
+        next_category = exposure_by_category.get(m.category, 0.0) + order_notional
+        if next_category > cfg.risk.max_category_exposure:
+            circuit.trip("cb_max_category_exposure")
+            rejected["max_category_exposure"] += 1
+            continue
         v = validate_order(d, m, signal, cfg)
         if not v.ok:
             rejected[v.reason or "order_validation_failed"] += 1
             continue
         oid = broker.place(d)
-        recorder.write("orders", {"order_id": oid, "market_id": d.market_id, "side": d.side, "price": d.price, "size": d.size})
+        safe_record("orders", {"order_id": oid, "market_id": d.market_id, "side": d.side, "price": d.price, "size": d.size})
         decisions_ids.append(oid)
         fill = broker.mark_fill(oid)
         if fill:
             stateful_fill_ids.append(fill.order_id)
             recorded_fill_ids.append(fill.order_id)
-            recorder.write("fills", asdict(fill))
+            safe_record("fills", asdict(fill))
             pnl = pnl_for_fill(fill, m.yes_price, signal, cfg.costs.fee_bps, cfg.costs.reward_bps_placeholder)
             pnl_rows.append(pnl)
-            recorder.write("pnl", asdict(pnl))
+            safe_record("pnl", asdict(pnl))
             placed += 1
+            run_notional += order_notional
+            position_by_market[m.market_id] = next_position
+            exposure_by_category[m.category] = next_category
 
     active_ids = list(broker._orders.keys())  # noqa: SLF001
     seqs = list(range(1, recorder.seq + 1))
     recon = reconcile_state(decisions_ids, active_ids, decisions_ids, recorded_fill_ids, stateful_fill_ids, seqs)
     if any(a.severity == "high" for a in recon):
         circuit.trip("cb_reconciliation_high")
-    recorder.write("reconciliation_anomalies", {"items": [asdict(a) for a in recon]})
-    recorder.write("wallet_scores", {"scores": [asdict(s) for s in scores.values()]})
-    recorder.write("wallet_clusters", {"clusters": [asdict(c) for c in clusters]})
-    recorder.write("signal_permissions", {"effective_mode": perm.effective_signal_mode, "downgrade_reasons": perm_reasons})
+    safe_record("reconciliation_anomalies", {"items": [asdict(a) for a in recon]})
 
     summary = {
         "top_smart_wallets_observed": [asdict(s) for s in sorted(scores.values(), key=lambda x: x.score, reverse=True)[:3]],
@@ -168,9 +257,9 @@ def run_once(
         "markets_rejected_by_reason": dict(rejected),
         "wallet_derived_opportunities": sum(1 for _m in markets),
         "pnl_total": sum(p.total for p in pnl_rows),
+        "config_fingerprint": _fingerprint_config(config_path),
     }
-    recorder.write("run_metadata", {"config_fingerprint": _fingerprint_config(config_path)})
-    recorder.write("run", {"placed": placed, "markets": len(markets)})
-    recorder.write("run_report", summary)
+    safe_record("run", {"placed": placed, "markets": len(markets)})
+    safe_record("run_report", summary)
     Path(cfg.recorder.output_dir, "run_report.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
     return placed
