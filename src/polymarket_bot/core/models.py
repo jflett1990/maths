@@ -166,6 +166,19 @@ class Fill:
 
 
 @dataclass(slots=True)
+class Order:
+    order_id: str
+    market_id: str
+    side: str
+    price: float
+    size: float
+    created_ts: int
+    expires_ts: int
+    status: str = "created"
+    filled_size: float = 0.0
+
+
+@dataclass(slots=True)
 class PnLBreakdown:
     market_id: str
     forecast_alpha: float

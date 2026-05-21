@@ -15,8 +15,9 @@ def reconcile_state(intended_order_ids: list[str], active_order_ids: list[str], 
     out: list[ReconciliationAnomaly] = []
     if len(active_order_ids) != len(set(active_order_ids)):
         out.append(ReconciliationAnomaly("duplicate_active_orders", "high", None, "duplicate order ids in active state"))
+    terminal_ids = set(recorded_fill_ids) | set(stateful_fill_ids)
     for oid in intended_order_ids:
-        if oid not in active_order_ids:
+        if oid not in active_order_ids and oid not in terminal_ids:
             out.append(ReconciliationAnomaly("missing_active_order", "high", None, oid))
     for oid in active_order_ids:
         if oid not in intended_order_ids:

@@ -46,9 +46,15 @@ class RecorderConfig(BaseModel):
 
 
 class AdapterConfig(BaseModel):
+    clob_base_url: str = "https://clob.polymarket.com"
     rate_limit_per_sec: float = 5.0
     timeout_sec: float = 5.0
     retries: int = 3
+    poly_address_env: str = "POLY_ADDRESS"
+    poly_api_key_env: str = "POLY_API_KEY"
+    poly_passphrase_env: str = "POLY_PASSPHRASE"
+    poly_signature_env: str = "POLY_SIGNATURE"
+    poly_timestamp_env: str = "POLY_TIMESTAMP"
 
 
 class CostConfig(BaseModel):
@@ -108,6 +114,7 @@ class EdgeWeightConfig(BaseModel):
 class SignalsConfig(BaseModel):
     wallet_intelligence: SignalGovernanceConfig | None = None
     sentiment: SentimentConfig = SentimentConfig()
+    wallet_universe: list[str] = Field(default_factory=lambda: ["smart1"])
 
 
 class OraclesConfig(BaseModel):

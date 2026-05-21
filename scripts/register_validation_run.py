@@ -3,6 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import datetime, timezone
+from pathlib import Path
+
+from polymarket_bot.core.config import load_config
 
 from polymarket_bot.governance.fingerprints import fingerprint_files, fingerprint_obj, git_code_fingerprint
 from polymarket_bot.governance.gate import evaluate_promotion_gate
@@ -27,14 +30,21 @@ if __name__ == "__main__":
     p.add_argument("--requested-mode", default="observe_only")
     p.add_argument("--report-json", required=True)
     p.add_argument("--dataset-files", nargs="+", required=True)
-    p.add_argument("--config-json", required=True)
+    p.add_argument("--config-json", default=None)
+    p.add_argument("--config", default=None)
     p.add_argument("--allow-edge-contribution", action="store_true")
     args = p.parse_args()
 
     report = json.loads(open(args.report_json).read())
     gate, expires_at = evaluate_promotion_gate(report, args.requested_mode, args.allow_edge_contribution)
     dataset_fp = fingerprint_files(args.dataset_files)
-    config_fp = fingerprint_obj(json.loads(open(args.config_json).read()))
+    if args.config:
+        config_payload = json.loads(Path(args.config).read_text()) if args.config.endswith(".json") else json.loads(json.dumps(load_config(args.config).model_dump(mode="json")))
+    elif args.config_json:
+        config_payload = json.loads(open(args.config_json).read())
+    else:
+        raise SystemExit("one of --config or --config-json is required")
+    config_fp = fingerprint_obj(config_payload)
     report_fp = fingerprint_files([args.report_json])
     code_fp = git_code_fingerprint()
     now = datetime.now(timezone.utc).isoformat()
