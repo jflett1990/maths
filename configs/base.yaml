@@ -1,0 +1,86 @@
+mode: paper
+poll_interval_sec: 5
+min_expected_edge_bps: 25
+max_markets_per_cycle: 25
+
+risk:
+  max_position_per_market: 2000
+  max_event_exposure: 8000
+  max_category_exposure: 12000
+  max_daily_loss: 1500
+  max_drawdown: 3000
+  min_liquidity: 5000
+  max_spread_for_aggressive_bps: 150
+  resolution_risk_max: 0.35
+  toxicity_max: 0.65
+
+execution:
+  mode: passive
+  tick_size: 0.01
+  quote_levels: 3
+  quote_size: 100
+  post_only: true
+  stale_quote_sec: 20
+  slippage_bps_limit: 40
+  gtd_minutes_before_catalyst: 15
+  max_orders_per_run: 100
+  max_order_notional_per_run: 50000
+
+penalties:
+  uncertainty_haircut: 0.5
+  reward_haircut: 0.5
+  toxicity_scale: 1.0
+  resolution_scale: 1.0
+
+adapters:
+  rate_limit_per_sec: 5
+  timeout_sec: 5
+  retries: 3
+
+costs:
+  fee_bps: 0.0
+  reward_bps_placeholder: 0.0
+
+mode_controls:
+  allow_live_orders: false
+  live_confirmation:
+  require_kill_switch_armed: true
+  shadow_observe_only: true
+
+kill_switch:
+  global_enabled: false
+  per_market_disabled: []
+
+replay:
+  skip_malformed_lines: false
+
+recorder:
+  output_dir: state
+  flush_every: 1
+  fsync: false
+  fail_on_error: true
+
+signals:
+  wallet_intelligence:
+    enabled: true
+    signal_name: wallet_intelligence
+    signal_version: v1
+    experiment_id: wallet_intelligence_default
+    requested_mode: observe_only
+    registry_path: state/registry_events.jsonl
+    validation_report_path: state/wallet_validation_report.json
+    dataset_paths:
+      - tests/fixtures/recorded_state/market_snapshots.jsonl
+      - tests/fixtures/recorded_state/wallet_observations.jsonl
+      - tests/fixtures/recorded_state/resolved_outcomes.jsonl
+    allow_edge_contribution: false
+
+
+oracles:
+  enabled: false
+
+edge_weights:
+  orderbook: 1.0
+  sentiment: 0.0
+  oracle_divergence: 0.0
+

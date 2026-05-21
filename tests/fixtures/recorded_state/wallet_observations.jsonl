@@ -1,0 +1,1 @@
+{"run_id":"r1","schema_version":2,"seq":1,"ts":1000,"wallet_id":"w1","market_id":"m1","side":"buy","price":0.5,"size":100,"category":"politics","liquidity":10000,"resolution_clarity":0.9,"resolved":false}
