@@ -21,7 +21,8 @@ class JsonlRecorder:
     def write(self, stream: str, payload: dict[str, Any]) -> None:
         self.seq += 1
         import datetime
-        record = {"schema_version": 1, "run_id": self.run_id, "seq": self.seq, "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(), **payload}
+        now = datetime.datetime.now(datetime.timezone.utc)
+        record = {"schema_version": 2, "run_id": self.run_id, "seq": self.seq, "ts": int(now.timestamp()), "timestamp": now.isoformat(), **payload}
         fp = self.output_dir / f"{stream}.jsonl"
         try:
             with fp.open("a", encoding="utf-8") as f:

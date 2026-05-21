@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from datetime import datetime, timezone
 
 from polymarket_bot.governance.registry import ExperimentRegistry
@@ -15,5 +14,10 @@ if __name__ == "__main__":
     if not rec:
         raise SystemExit(1)
     rec["expiration"]["expires_at"] = datetime.now(timezone.utc).isoformat()
-    reg.state_path.write_text(json.dumps({"experiments": {**reg.materialize_state()["experiments"], a.experiment_id: rec}}, indent=2, sort_keys=True))
+    rec["seq"] = int(rec.get("seq", 1)) + 1
+    rec["created_at"] = datetime.now(timezone.utc).isoformat()
+    with reg.log_path.open("a", encoding="utf-8") as f:
+        import json
+        f.write(json.dumps(rec, sort_keys=True) + "\n")
+    reg.materialize_state()
     print(a.experiment_id)

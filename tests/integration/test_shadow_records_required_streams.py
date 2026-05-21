@@ -8,5 +8,5 @@ def test_shadow_records_streams(tmp_path) -> None:
     p = tmp_path / 'c.yaml'
     p.write_text(cfg)
     run_once(str(p))
-    for f in ['market_snapshots.jsonl','wallet_observations.jsonl','wallet_scores.jsonl','wallet_signals.jsonl','decision_context.jsonl','signal_permissions.jsonl','reconciliation_anomalies.jsonl','run_metadata.jsonl','run_report.jsonl']:
+    for f in ['market_snapshots.jsonl','wallet_observations.jsonl','signals.jsonl','decisions.jsonl','orders.jsonl','fills.jsonl','pnl.jsonl','run.jsonl','run_report.jsonl','reconciliation_anomalies.jsonl']:
         assert (tmp_path / 'state' / f).exists()
