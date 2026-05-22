@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from polymarket_bot.app import run_once
+from prediction_market_bot.app import run_once
 
 
 if __name__ == "__main__":
