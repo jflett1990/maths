@@ -1,0 +1,51 @@
+mode: shadow
+poll_interval_sec: 30
+min_expected_edge_bps: 5
+max_markets_per_cycle: 20
+risk:
+  max_position_per_market: 200
+  max_event_exposure: 300
+  max_category_exposure: 500
+  max_daily_loss: 200
+  max_drawdown: 300
+  min_liquidity: 1000
+  max_spread_for_aggressive_bps: 150
+  resolution_risk_max: 0.5
+  toxicity_max: 0.9
+execution:
+  mode: shadow
+  tick_size: 0.01
+  quote_levels: 1
+  quote_size: 10
+  post_only: true
+  stale_quote_sec: 10
+  slippage_bps_limit: 100
+  gtd_minutes_before_catalyst: 60
+penalties:
+  uncertainty_haircut: 0.1
+  reward_haircut: 1.0
+  toxicity_scale: 1.0
+  resolution_scale: 1.0
+recorder:
+  output_dir: state/recorded
+  flush_every: 1
+  fsync: false
+  fail_on_error: true
+adapters:
+  clob_base_url: https://demo-api.kalshi.co/trade-api/v2
+  rate_limit_per_sec: 5.0
+  timeout_sec: 5.0
+mode_controls:
+  allow_live_orders: false
+  shadow_observe_only: true
+signals:
+  wallet_intelligence:
+    enabled: false
+    signal_name: account_intelligence
+    signal_version: v1
+    experiment_id: disabled
+    requested_mode: observe_only
+    registry_path: state/registry/experiment_registry.jsonl
+    validation_report_path: state/account_validation_report.json
+    dataset_paths: []
+    allow_edge_contribution: false

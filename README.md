@@ -1,23 +1,23 @@
-# Polymarket Structural Edge System
+# Prediction Market Bot Framework
 
-Safety-first paper/shadow/live-separated architecture.
+Safety-first prediction-market research framework with paper/shadow/live separation. Kalshi is the first concrete adapter.
 
 ## Quickstart
 ```bash
-make setup
+python -m pip install -e '.[dev]'
 pytest
-python scripts/run_paper.py --config configs/base.yaml
+python scripts/run_paper.py --config configs/kalshi_paper.yaml
+python scripts/run_shadow.py --config configs/kalshi_shadow.yaml
 ```
 
-## Modes
+## Safety Defaults
 - `paper`: simulated execution only.
 - `shadow`: observe/scoring only, no order placement.
-- `live`: requires explicit enablement + confirmation + armed kill switch.
+- `live`: fail-closed unless explicitly enabled and armed.
+- Kalshi live order placement/cancel is disabled in this migration.
 
 ## Runbooks
-- `docs/runbook_paper.md`
-- `docs/runbook_shadow.md`
-- `docs/live_readiness_checklist.md`
-- `docs/risk_controls.md`
-- `docs/replay_debugging.md`
-- `docs/config_reference.md`
+- `docs/kalshi_migration.md`
+- `docs/kalshi_adapter.md`
+- `docs/replit_runbook.md`
+- `docs/secrets_setup.md`
